@@ -1,5 +1,4 @@
 """Books list pagination, filters, and search tests."""
-import pytest
 from fastapi.testclient import TestClient
 
 

@@ -10,8 +10,8 @@ from sqlalchemy.orm import sessionmaker
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 from app.db.base import Base
-from app.models.book import Book  # noqa: F401 - register table with Base
 from app.main import app
+from app.models.book import Book  # noqa: F401 - register table with Base
 
 
 @pytest.fixture(scope="function")

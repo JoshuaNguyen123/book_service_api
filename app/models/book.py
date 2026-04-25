@@ -1,8 +1,9 @@
 """Book SQLAlchemy model."""
 import json
 import uuid
-from datetime import datetime, timezone
-from sqlalchemy import DateTime, String, Text, Integer
+from datetime import UTC, datetime
+
+from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.dialects.sqlite import CHAR
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,7 +11,7 @@ from app.db.base import Base
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Book(Base):

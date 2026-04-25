@@ -1,423 +1,339 @@
 # Book API
 
-`Book API` is a backend portfolio project built to demonstrate clean REST API design in Python. It provides CRUD operations for books, supports filtering and search, uses a lightweight SQLite database for zero-cost local development, and includes Docker support for portable demos and deployment.
+A production-ready REST API for managing books, built with FastAPI and SQLAlchemy.
 
-The project is intentionally simple in product scope and strong in backend fundamentals: request validation, structured error responses, environment-based configuration, database persistence, automated tests, and clear developer documentation.
+**v1** provides a stable CRUD contract with search, filtering, and pagination.  
+**v2** adds frontier capabilities: Ollama AI enrichment, web crawling, ISBN lookup, web search (Open Library + Google Books), and bulk operations.
 
-## What This Project Demonstrates
+---
 
-- REST API design with versioned endpoints under `/v1`
-- FastAPI application structure with routers, schemas, and dependency injection
-- SQLAlchemy ORM integration with SQLite for a lightweight persistence layer
-- Pydantic validation for request bodies and query parameters
-- Standardized JSON error responses for validation, conflict, and not-found cases
-- Search, pagination, and filter patterns commonly used in production APIs
-- Dockerized local execution for consistent environments
-- Automated tests using `pytest` and FastAPI's test client
+## API Versions at a Glance
+
+| Capability | v1 | v2 |
+|------------|----|----|
+| Full CRUD (create / read / update / delete) | ✓ | ✓ |
+| Pagination (`limit` / `offset`) | ✓ | ✓ + `has_more` / `next_offset` |
+| Filter by author, tag, year | ✓ | ✓ + `year_min` / `year_max` range |
+| Sort control | — | `sort` + `sort_dir` |
+| Full-text search (title, authors, tags) | ✓ | ✓ + description |
+| AI book enrichment (Ollama) | — | ✓ |
+| Web search (Open Library + Google Books) | — | ✓ |
+| ISBN lookup (Open Library) | — | ✓ |
+| Import from ISBN or URL | — | ✓ |
+| Bulk create / delete | — | ✓ |
+| `X-Total-Count` header on lists | — | ✓ |
+| Richer health (Ollama status, uptime) | — | ✓ |
+
+---
+
+## v2 Highlights
+
+### AI Enrichment via Ollama
+`POST /v2/books/{id}/enrich` calls the configured Ollama model and returns a structured JSON response with an AI-written summary, suggested tags, and themes. Works with any model available on your Ollama instance (default: `llama3`). Degrades gracefully to a 503 if Ollama is unreachable.
+
+### Web Search
+`GET /v2/books/search-web?q=dune` queries Open Library (free, no key required) and optionally Google Books (set `GOOGLE_BOOKS_API_KEY`). Results are normalized to a common schema and deduplicated by ISBN.
+
+### ISBN Lookup
+`GET /v2/books/lookup/{isbn}` resolves an ISBN-10 or ISBN-13 to structured metadata via Open Library — without touching your database.
+
+### Import from Web
+`POST /v2/books/import` fetches metadata by ISBN or by scraping a URL (using Open Graph, schema.org, and meta tags), then optionally saves it to the database. Set `save: false` for a dry-run preview.
+
+### Bulk Operations
+`POST /v2/books/bulk` creates up to 50 books in a single request. Each item is processed independently; failures are reported per-item without blocking successes. `DELETE /v2/books/bulk` deletes by a list of IDs.
+
+---
 
 ## Technical Features
 
-- **Books CRUD**
-  Create, read, update, and delete book records.
-- **Search**
-  Search across `title`, `authors`, and `tags`.
-- **Pagination**
-  `limit` and `offset` are supported on list and search endpoints.
-- **Filtering**
-  Filter by `author`, `tag`, and `year`.
-- **Validation**
-  Required titles, bounded `published_year`, and typed request/response models.
-- **Unique constraints**
-  `isbn` must be unique when provided.
-- **Consistent error contract**
-  Errors return:
-  `{"error":{"code":"...","message":"...","details":{...}}}`
-- **Configurable CORS**
-  Disabled by default, enabled with `CORS_ORIGINS`.
-- **Portable storage**
-  Defaults to `sqlite:///./data/app.db` and auto-creates the data directory on startup.
-- **Docker support**
-  The API can be launched with `docker compose up --build`.
+- **Production middleware** — request logging (`method path status duration_ms`) and security headers (`X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`) on every response
+- **Structured configuration** — all settings via env vars / `.env` with Pydantic Settings
+- **Consistent error contract** — `{"error":{"code":"...","message":"...","details":{...}}}`
+- **Input validation** — Pydantic models with whitespace normalization, year bounds, ISBN uniqueness
+- **Alembic migrations** — schema evolution without data loss (`alembic upgrade head`)
+- **GitHub Actions CI** — lint + test on every push
+- **Makefile** — common dev tasks at your fingertips
+- **Docker support** — single `docker compose up --build` to run
 
-## Architecture Overview
+---
 
-The codebase follows a small but clean separation of concerns:
+## Architecture
 
-- `app/main.py`
-  Creates the FastAPI app, registers routers, initializes the database on startup, and centralizes exception handling.
-- `app/api/v1/`
-  Contains versioned HTTP routes.
-- `app/models/`
-  Contains SQLAlchemy models.
-- `app/db/`
-  Contains the declarative base, engine creation, sessions, and database initialization.
-- `app/core/`
-  Contains application settings loaded from environment variables or `.env`.
-- `tests/`
-  Contains endpoint-level tests that validate API behavior and error handling.
-- `scripts/`
-  Contains utility scripts such as database seeding.
-
-## API Design
-
-### Resource Model
-
-Each book includes:
-
-- `id`
-- `title`
-- `authors`
-- `isbn`
-- `published_year`
-- `tags`
-- `description`
-- `created_at`
-- `updated_at`
-
-The API stores `authors` and `tags` as JSON-encoded lists in SQLite while exposing them as `list[str]` in the external API. This keeps the public contract clean while keeping the local storage model lightweight.
-
-### Endpoints
-
-Base path: `/v1`
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `POST` | `/books` | Create a book |
-| `GET` | `/books` | List books with pagination and filters |
-| `GET` | `/books/{book_id}` | Retrieve one book |
-| `PATCH` | `/books/{book_id}` | Partially update a book |
-| `DELETE` | `/books/{book_id}` | Delete a book |
-| `GET` | `/books/search?q=...` | Search books |
-
-### Query Parameters
-
-- `limit`
-  Default `25`, max `100`
-- `offset`
-  Default `0`
-- `author`
-  Optional author filter
-- `tag`
-  Optional tag filter
-- `year`
-  Optional published year filter
-
-## Error Handling
-
-The API uses a consistent JSON error shape to make client integration easier:
-
-```json
-{
-  "error": {
-    "code": "validation_error",
-    "message": "Request validation failed",
-    "details": {
-      "errors": []
-    }
-  }
-}
+```
+app/
+  main.py              # App factory, middleware, exception handlers
+  core/config.py       # Pydantic Settings (env vars + .env file)
+  api/
+    v1/                # Stable CRUD API
+      books.py         # CRUD, search, filtering, pagination
+      health.py        # Basic health check
+    v2/                # Frontier API
+      books.py         # All v1 + AI enrich, web search, import, bulk
+      health.py        # Extended health (Ollama status, uptime)
+  models/book.py       # SQLAlchemy ORM model
+  db/session.py        # Engine, session factory, init_db()
+  services/
+    ollama_client.py   # Ollama AI enrichment wrapper
+    web_search.py      # Open Library + Google Books search
+    web_crawler.py     # ISBN lookup + URL scraping
+alembic/               # Database migrations
+scripts/seed_books.py  # Sample data seeding
+tests/                 # pytest suite (v1 + v2)
 ```
 
-Current handled cases include:
-
-- `404 not_found`
-- `409 conflict`
-- `422 validation_error`
-- `500 internal_error`
-
-## Quality and Production-Readiness
-
-This project is designed to be small in scope but disciplined in implementation.
-
-- Input validation is enforced through Pydantic models.
-- The application returns standardized error payloads instead of raw framework exceptions.
-- The database schema is created automatically on startup for easier demos and onboarding.
-- Configuration is environment-driven through `pydantic-settings`.
-- Docker support allows a reproducible local runtime.
-- Tests run against an in-memory SQLite database, so they are isolated from the local data file.
-
-### Current Production Considerations
-
-This project is deployable, but it is intentionally lightweight.
-
-- SQLite is excellent for local demos, small deployments, and single-node use cases.
-- For heavier production workloads, a server database such as PostgreSQL would be a better next step.
-- No authentication or authorization is included in this version.
-- Table creation is automatic on startup rather than managed by migrations.
-
-Those trade-offs keep the project focused, practical, and easy to evaluate.
-
-## Project Structure
-
-```text
-book-api/
-  app/
-    api/
-      v1/
-        __init__.py
-        books.py
-        health.py
-    core/
-      config.py
-    db/
-      base.py
-      session.py
-    models/
-      book.py
-    main.py
-  scripts/
-    seed_books.py
-  tests/
-    conftest.py
-    test_books_crud.py
-    test_books_query.py
-    test_health.py
-  Dockerfile
-  docker-compose.yml
-  pyproject.toml
-  README.md
-```
-
-## Prerequisites
-
-- `Python 3.11+`
-- `pip`
-- `Docker` and `Docker Compose` for the containerized workflow
-
-Install Python:
-
-- **Windows:** use [python.org](https://www.python.org/downloads/) or `winget install Python.Python.3.11`
-- **macOS:** use `brew install python@3.11` or the official installer
-- **Linux:** install from your package manager, for example `sudo apt install python3.11 python3.11-venv`
-
-Verify your installation:
-
-```powershell
-python --version
-pip --version
-```
-
-```bash
-python3 --version
-pip3 --version
-```
+---
 
 ## Quick Start
 
-### Windows (PowerShell)
+### Prerequisites
+- Python 3.11+
+- (Optional) [Ollama](https://ollama.com) for AI features
 
-From the project root:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# If PowerShell blocks activation, run this once:
-# Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-
-pip install -e .
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-### macOS / Linux
-
-From the project root:
+### 1. Install dependencies
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+# macOS / Linux
+python -m venv .venv && source .venv/bin/activate
+make install
+
+# Windows PowerShell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
 ```
 
-Local URLs:
-
-- API: [http://127.0.0.1:8000](http://127.0.0.1:8000)
-- Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- ReDoc: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-
-The SQLite database is created at `data/app.db`.
-
-## Seed Sample Data
-
-The project includes a seed script for populating the database with sample books.
-
-**Windows**
-
-```powershell
-python scripts\seed_books.py
-```
-
-**macOS / Linux**
+### 2. Configure (optional)
 
 ```bash
-python scripts/seed_books.py
+cp .env.example .env
+# Edit .env — all settings have sensible defaults
 ```
 
-If the database already contains records, the script skips reseeding.
+### 3. Run
 
-## Run With Docker
+```bash
+make run
+# Server starts at http://localhost:8000
+# Docs at    http://localhost:8000/docs
+```
 
-This project can also be run in a containerized environment:
+### 4. Seed sample data (optional)
+
+```bash
+make seed
+```
+
+---
+
+## Docker
 
 ```bash
 docker compose up --build
 ```
 
-The API will be available at [http://127.0.0.1:8000](http://127.0.0.1:8000), and the SQLite data file is persisted through the `./data` volume mount.
+The API is available at `http://localhost:8000`. SQLite data is persisted in `./data/`.
 
-To seed sample data inside the container:
+---
 
-```bash
-docker compose exec api python scripts/seed_books.py
-```
+## Makefile Commands
+
+| Command | Description |
+|---------|-------------|
+| `make install` | Install all dependencies (core + dev) |
+| `make test` | Run pytest with coverage |
+| `make lint` | Run ruff linter |
+| `make format` | Auto-format code with ruff |
+| `make run` | Start dev server with hot reload |
+| `make docker-build` | Build Docker image |
+| `make docker-run` | Start via docker compose |
+| `make seed` | Seed 40+ sample books |
+| `make migrate` | Run `alembic upgrade head` |
+
+---
 
 ## Configuration
 
-Configuration is loaded from environment variables or a local `.env` file.
+All settings are read from environment variables or a `.env` file (see `.env.example`).
 
-Copy the example file:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | `sqlite:///./data/app.db` | SQLAlchemy database URL |
+| `CORS_ORIGINS` | *(disabled)* | Comma-separated allowed origins |
+| `LOG_LEVEL` | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama instance URL (local or cloud) |
+| `OLLAMA_MODEL` | `llama3` | Model for AI enrichment |
+| `GOOGLE_BOOKS_API_KEY` | *(none)* | Optional — higher quota for Google Books |
 
-**Windows**
+---
 
-```powershell
-Copy-Item .env.example .env
+## Ollama Setup
+
+1. Install Ollama: https://ollama.com/download  
+   Or point `OLLAMA_BASE_URL` at an Ollama Cloud instance.
+
+2. Pull a model:
+   ```bash
+   ollama pull llama3
+   ```
+
+3. Set env vars (or add to `.env`):
+   ```
+   OLLAMA_BASE_URL=http://localhost:11434
+   OLLAMA_MODEL=llama3
+   ```
+
+The `/v2/books/{id}/enrich` endpoint will return a 503 (with a clear message) if Ollama is unreachable — all other endpoints continue to work normally.
+
+---
+
+## Logging & Observability
+
+Every request is logged to stdout in this format:
+
+```
+2024-01-15T12:34:56 INFO app.main GET /v1/books 200 14ms
 ```
 
-**macOS / Linux**
+Control verbosity with `LOG_LEVEL=DEBUG` (logs SQL queries via SQLAlchemy echo) or `LOG_LEVEL=WARNING` to reduce noise in production.
+
+---
+
+## Database Migrations
+
+The app uses [Alembic](https://alembic.sqlalchemy.org/) for schema evolution.
 
 ```bash
-cp .env.example .env
+# Apply all pending migrations
+make migrate                          # or: alembic upgrade head
+
+# Create a new migration after changing a model
+alembic revision --autogenerate -m "add cover_url to books"
+
+# Roll back one step
+alembic downgrade -1
 ```
 
-Supported settings:
+On first run the app also calls `create_all()` for compatibility, so Alembic is strictly additive.
 
-| Variable | Description | Default |
-|---|---|---|
-| `DATABASE_URL` | Database connection string | `sqlite:///./data/app.db` |
-| `CORS_ORIGINS` | Comma-separated allowed origins | disabled |
+---
 
-Example:
+## CI
 
-```env
-DATABASE_URL=sqlite:///./data/app.db
-# CORS_ORIGINS=http://localhost:3000,https://example.com
+GitHub Actions runs on every push and pull request:
+
+1. **Lint** — `ruff check .`
+2. **Test** — `pytest --cov=app --cov-report=term-missing`
+
+See `.github/workflows/ci.yml`.
+
+---
+
+## API Reference
+
+### v1 Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/health` | Health check |
+| `POST` | `/v1/books` | Create a book |
+| `GET` | `/v1/books` | List books (paginated + filtered) |
+| `GET` | `/v1/books/search` | Full-text search |
+| `GET` | `/v1/books/{id}` | Get book by ID |
+| `PATCH` | `/v1/books/{id}` | Partial update |
+| `DELETE` | `/v1/books/{id}` | Delete book |
+
+### v2 Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v2/health` | Extended health (Ollama + uptime) |
+| `POST` | `/v2/books` | Create a book |
+| `GET` | `/v2/books` | List books (advanced filters + sort) |
+| `GET` | `/v2/books/search` | Search (includes description field) |
+| `GET` | `/v2/books/search-web` | Search Open Library + Google Books |
+| `GET` | `/v2/books/lookup/{isbn}` | ISBN metadata lookup |
+| `POST` | `/v2/books/import` | Import from ISBN or URL |
+| `POST` | `/v2/books/bulk` | Bulk create (up to 50) |
+| `DELETE` | `/v2/books/bulk` | Bulk delete by IDs |
+| `POST` | `/v2/books/{id}/enrich` | AI enrich via Ollama |
+| `GET` | `/v2/books/{id}` | Get book by ID |
+| `PATCH` | `/v2/books/{id}` | Partial update |
+| `DELETE` | `/v2/books/{id}` | Delete book |
+
+### Error Contract
+
+All errors use a consistent shape:
+
+```json
+{
+  "error": {
+    "code": "not_found | conflict | validation_error | service_unavailable | internal_error",
+    "message": "Human-readable description",
+    "details": {}
+  }
+}
 ```
 
-## API Usage Examples
-
-### Health Check
+### Example: Create a book
 
 ```bash
-curl http://127.0.0.1:8000/v1/health
-```
-
-PowerShell:
-
-```powershell
-Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/health
-```
-
-### Create a Book
-
-```bash
-curl -X POST http://127.0.0.1:8000/v1/books \
+curl -X POST http://localhost:8000/v1/books \
   -H "Content-Type: application/json" \
-  -d "{\"title\":\"Clean Architecture\",\"authors\":[\"Robert C. Martin\"],\"tags\":[\"software\",\"architecture\"],\"published_year\":2017}"
+  -d '{
+    "title": "Dune",
+    "authors": ["Frank Herbert"],
+    "isbn": "978-0-441-17271-9",
+    "published_year": 1965,
+    "tags": ["sci-fi", "classic"]
+  }'
 ```
 
-### List Books
+### Example: AI enrich a book (v2)
 
 ```bash
-curl "http://127.0.0.1:8000/v1/books?limit=10&offset=0"
+curl -X POST http://localhost:8000/v2/books/{book_id}/enrich
 ```
 
-### Filter Books
+### Example: Search books on the web (v2)
 
 ```bash
-curl "http://127.0.0.1:8000/v1/books?author=Robert%20C.%20Martin&tag=software&year=2017"
+curl "http://localhost:8000/v2/books/search-web?q=foundation+asimov"
 ```
 
-### Search Books
+### Example: Import by ISBN (v2)
 
 ```bash
-curl "http://127.0.0.1:8000/v1/books/search?q=architecture"
-```
-
-### Update a Book
-
-```bash
-curl -X PATCH http://127.0.0.1:8000/v1/books/{book_id} \
+curl -X POST http://localhost:8000/v2/books/import \
   -H "Content-Type: application/json" \
-  -d "{\"title\":\"Clean Architecture, Updated Edition\"}"
+  -d '{"isbn": "9780441172719"}'
 ```
 
-### Delete a Book
-
-```bash
-curl -X DELETE http://127.0.0.1:8000/v1/books/{book_id}
-```
+---
 
 ## Testing
 
-Run the test suite from the project root:
-
-**Windows**
-
-```powershell
-pytest tests\ -v
-```
-
-**macOS / Linux**
-
 ```bash
-pytest tests/ -v
+make test
 ```
 
-Optional coverage tooling:
+The test suite uses an in-memory SQLite database — no side effects on `./data/app.db`.
 
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v --cov=app --cov-report=term-missing
-```
-
-The tests cover:
-
-- health endpoint behavior
-- CRUD operations
-- pagination
-- filtering
-- search
-- unique ISBN conflict handling
-- validation error formatting
-
-## Deployment Notes
-
-For production-style deployment:
-
-- run without `--reload`
-- bind to `0.0.0.0` when exposing the service externally
-- place the app behind a reverse proxy such as Nginx or Caddy
-- set configuration with environment variables
-- use `/v1/health` as a health check endpoint
-
-Example:
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-If the project evolves beyond SQLite's comfort zone, replacing SQLite with PostgreSQL and adding migrations with Alembic would be the natural next production upgrade.
+---
 
 ## Tech Stack
 
-- Python 3.11+
-- FastAPI
-- SQLAlchemy
-- SQLite
-- Pydantic
-- Uvicorn
-- Pytest
-- HTTPX
-- Docker
+| Layer | Technology |
+|-------|-----------|
+| Framework | FastAPI |
+| Validation | Pydantic v2 |
+| ORM | SQLAlchemy 2.0 |
+| Database | SQLite (default) / any SQLAlchemy-compatible DB |
+| Migrations | Alembic |
+| AI | Ollama (local or cloud) |
+| Web crawling | httpx + BeautifulSoup4 |
+| Web search | Open Library API, Google Books API |
+| Server | Uvicorn |
+| Tests | pytest + httpx |
+| Linting | ruff |
+| CI | GitHub Actions |
+| Container | Docker + docker compose |
