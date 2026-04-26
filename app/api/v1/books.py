@@ -12,15 +12,30 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.book import Book
 
-router = APIRouter()
+router = APIRouter(tags=["books-v1"])
 
 # --- Pydantic schemas ---
 
 YEAR_MIN = 1000
 YEAR_MAX = 2100
 
+_BOOK_EXAMPLE = {
+    "title": "Dune",
+    "authors": ["Frank Herbert"],
+    "isbn": "978-0-441-17271-9",
+    "published_year": 1965,
+    "tags": ["sci-fi", "classic"],
+    "description": "A science fiction epic set on the desert planet Arrakis.",
+}
+
 
 class BookCreate(BaseModel):
+    model_config = {
+        "json_schema_extra": {
+            "example": _BOOK_EXAMPLE,
+        }
+    }
+
     title: str = Field(..., min_length=1)
     authors: list[str] = Field(default_factory=list)
     isbn: str | None = None
@@ -61,6 +76,16 @@ class BookCreate(BaseModel):
 
 
 class BookUpdate(BaseModel):
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "title": "Dune Messiah",
+                "published_year": 1969,
+                "tags": ["sci-fi", "sequel"],
+            },
+        }
+    }
+
     title: str | None = Field(None, min_length=1)
     authors: list[str] | None = None
     isbn: str | None = None
@@ -173,7 +198,52 @@ def _commit_or_raise_conflict(db: Session) -> None:
         raise
 
 
-@router.post("", response_model=BookResponse, status_code=201)
+_NOT_FOUND_RESPONSES = {
+    404: {
+        "description": "Book not found",
+        "content": {
+            "application/json": {
+                "example": {"error": {"code": "not_found", "message": "Book not found", "details": {"id": "<uuid>"}}}
+            }
+        },
+    }
+}
+
+_CONFLICT_RESPONSES = {
+    409: {
+        "description": "ISBN already exists",
+        "content": {
+            "application/json": {
+                "example": {
+                    "error": {"code": "conflict", "message": "ISBN already exists", "details": {"field": "isbn"}}
+                }
+            }
+        },
+    }
+}
+
+_VALIDATION_RESPONSES = {
+    422: {
+        "description": "Validation error",
+        "content": {
+            "application/json": {
+                "example": {
+                    "error": {"code": "validation_error", "message": "Request validation failed", "details": {}}
+                }
+            }
+        },
+    }
+}
+
+
+@router.post(
+    "",
+    response_model=BookResponse,
+    status_code=201,
+    summary="Create a book",
+    description="Create a new book record. ISBN must be unique if provided.",
+    responses={**_CONFLICT_RESPONSES, **_VALIDATION_RESPONSES},
+)
 def create_book(body: BookCreate, db: Session = Depends(get_db)):
     if body.isbn:
         existing = db.query(Book).filter(Book.isbn == body.isbn).first()
@@ -193,14 +263,19 @@ def create_book(body: BookCreate, db: Session = Depends(get_db)):
     return _book_to_response(book)
 
 
-@router.get("", response_model=BookListResponse)
+@router.get(
+    "",
+    response_model=BookListResponse,
+    summary="List books",
+    description="Return a paginated list of books. Optionally filter by author, tag, or year.",
+)
 def list_books(
     db: Session = Depends(get_db),
-    limit: int = Query(25, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    author: str | None = None,
-    tag: str | None = None,
-    year: int | None = Query(None, ge=YEAR_MIN, le=YEAR_MAX),
+    limit: int = Query(25, ge=1, le=100, description="Max items to return (1–100)"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
+    author: str | None = Query(None, description="Filter by exact author name"),
+    tag: str | None = Query(None, description="Filter by exact tag"),
+    year: int | None = Query(None, ge=YEAR_MIN, le=YEAR_MAX, description="Filter by year"),
 ):
     query = db.query(Book)
     query = _apply_filters(query, author, tag, year)
@@ -214,15 +289,24 @@ def list_books(
     )
 
 
-@router.get("/search", response_model=BookListResponse)
+@router.get(
+    "/search",
+    response_model=BookListResponse,
+    summary="Search books",
+    description=(
+        "Case-insensitive full-text search across **title**, **authors**, and **tags**. "
+        "Combine with `author`, `tag`, or `year` filters to narrow results."
+    ),
+    responses={**_VALIDATION_RESPONSES},
+)
 def search_books(
-    q: str = Query(..., min_length=1),
+    q: str = Query(..., min_length=1, description="Search query (non-blank)"),
     db: Session = Depends(get_db),
-    limit: int = Query(25, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    author: str | None = None,
-    tag: str | None = None,
-    year: int | None = Query(None, ge=YEAR_MIN, le=YEAR_MAX),
+    limit: int = Query(25, ge=1, le=100, description="Max items to return (1–100)"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
+    author: str | None = Query(None, description="Also filter by exact author name"),
+    tag: str | None = Query(None, description="Also filter by exact tag"),
+    year: int | None = Query(None, ge=YEAR_MIN, le=YEAR_MAX, description="Also filter by year"),
 ):
     q = q.strip()
     if not q:
@@ -253,19 +337,37 @@ def search_books(
     )
 
 
-@router.get("/{book_id}", response_model=BookResponse)
+@router.get(
+    "/{book_id}",
+    response_model=BookResponse,
+    summary="Get a book",
+    description="Retrieve a single book by its UUID.",
+    responses={**_NOT_FOUND_RESPONSES},
+)
 def get_book(book_id: UUID, db: Session = Depends(get_db)):
     book = db.query(Book).filter(Book.id == str(book_id)).first()
     if not book:
-        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Book not found", "details": {"id": str(book_id)}})
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "Book not found", "details": {"id": str(book_id)}},
+        )
     return _book_to_response(book)
 
 
-@router.patch("/{book_id}", response_model=BookResponse)
+@router.patch(
+    "/{book_id}",
+    response_model=BookResponse,
+    summary="Update a book",
+    description="Partially update a book. Only supplied fields are changed.",
+    responses={**_NOT_FOUND_RESPONSES, **_CONFLICT_RESPONSES, **_VALIDATION_RESPONSES},
+)
 def update_book(book_id: UUID, body: BookUpdate, db: Session = Depends(get_db)):
     book = db.query(Book).filter(Book.id == str(book_id)).first()
     if not book:
-        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Book not found", "details": {"id": str(book_id)}})
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "Book not found", "details": {"id": str(book_id)}},
+        )
     if body.isbn is not None and body.isbn != book.isbn:
         existing = db.query(Book).filter(Book.isbn == body.isbn).first()
         if existing:
@@ -284,12 +386,20 @@ def update_book(book_id: UUID, body: BookUpdate, db: Session = Depends(get_db)):
     return _book_to_response(book)
 
 
-@router.delete("/{book_id}", status_code=204)
+@router.delete(
+    "/{book_id}",
+    status_code=204,
+    summary="Delete a book",
+    description="Permanently delete a book by its UUID.",
+    responses={**_NOT_FOUND_RESPONSES},
+)
 def delete_book(book_id: UUID, db: Session = Depends(get_db)):
     book = db.query(Book).filter(Book.id == str(book_id)).first()
     if not book:
-        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Book not found", "details": {"id": str(book_id)}})
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "Book not found", "details": {"id": str(book_id)}},
+        )
     db.delete(book)
     db.commit()
     return None
-

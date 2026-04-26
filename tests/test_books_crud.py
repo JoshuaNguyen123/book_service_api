@@ -1,5 +1,4 @@
 """Books CRUD and error contract tests."""
-import pytest
 from fastapi.testclient import TestClient
 
 

@@ -13,6 +13,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Application
+    app_version: str = "1.0.0"
+
     # Database (use forward slashes for paths; works on Windows, macOS, Linux)
     database_url: str = "sqlite:///./data/app.db"
 
@@ -22,6 +25,16 @@ class Settings(BaseSettings):
     # Server (for documentation; run with: uvicorn app.main:app --host HOST --port PORT)
     host: str = "0.0.0.0"
     port: int = 8000
+
+    # Logging
+    log_level: str = "INFO"
+
+    # Ollama (AI enrichment) — point at Ollama Cloud or a local instance
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3"
+
+    # Google Books API (optional; web search falls back to Open Library only without it)
+    google_books_api_key: str | None = None
 
 
 def get_database_path() -> Path:
